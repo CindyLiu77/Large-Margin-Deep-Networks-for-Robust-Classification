@@ -4,7 +4,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from utils.data_loader import get_mnist_data_loader, get_cifar10_data_loader
+from utils.data_loader import get_mnist_data_loader
 from models.mnist_model import MNISTModel
 from losses.margin_loss import LargeMarginLoss
 
@@ -12,14 +12,18 @@ BATCH_SIZE = 64
 EPOCHS = 10
 LR = 0.01
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+LOSS_TYPE = "cross_entropy"  # "cross_entropy" or "margin_loss"
 
 # Load Data
 train_loader, val_loader, test_loader = get_mnist_data_loader(BATCH_SIZE)
 
 # Model, Loss, Optimizer
 model = MNISTModel().to(DEVICE)
-criterion = LargeMarginLoss(gamma=10.0, aggregation="max") 
+
+# criterion = LargeMarginLoss(gamma=10.0, aggregation="max") 
 criterion = nn.CrossEntropyLoss()
+if LOSS_TYPE == "margin_loss":
+    criterion = LargeMarginLoss(gamma=10.0, aggregation="max")
 optimizer = optim.Adam(model.parameters(), lr=LR)
 
 # Track Metrics
@@ -86,14 +90,14 @@ def plot_test_results(model, test_loader, num_images=10):
         axes[i].set_title(f"Pred: {predictions[i].item()}\nTrue: {labels[i].item()}")
         axes[i].axis("off")
     
-    plt.savefig("results/mnist_test_results_margin_loss.png")
+    plt.savefig(f"results/mnist_test_results_{LOSS_TYPE}_loss.png")
     plt.show()
 
 # Run the function
 plot_test_results(model, test_loader)
 
 # Save Model
-torch.save(model.state_dict(), "checkpoints/mnist_model_margin_loss.pth")
+torch.save(model.state_dict(), f"checkpoints/mnist_model_{LOSS_TYPE}_loss.pth")
 
 # Plot Training & Validation Loss
 plt.figure(figsize=(10,4))
@@ -117,6 +121,6 @@ plt.title("Training vs. Validation Accuracy")
 plt.legend()
 
 # Save and Show
-plt.savefig("results/mnist_training_validation_margin_loss.png")
+plt.savefig(f"results/mnist_training_validation_{LOSS_TYPE}_loss.png")
 plt.show()
 

@@ -73,7 +73,7 @@ for epoch in range(EPOCHS):
 
 
 # Save Model
-torch.save(model.state_dict(), "checkpoints/cifar_model_margin_loss.pth")
+torch.save(model.state_dict(), f"checkpoints/cifar_model_${LOSS_TYPE}_loss.pth")
 
 # Plot Training & Validation Loss
 plt.figure(figsize=(10,4))
@@ -97,5 +97,5 @@ plt.title("Training vs. Validation Accuracy")
 plt.legend()
 
 # Save and Show
-plt.savefig("results/cifar10_training_validation.png")
+plt.savefig(f"results/cifar10_training_${LOSS_TYPE}_validation.png")
 plt.show()
