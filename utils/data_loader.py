@@ -5,6 +5,18 @@ from torch.utils import data
 from torch.utils.data import DataLoader, random_split
 
 def get_mnist_data_loader(batch_size, val_split=0.1):
+    """
+    Load MNIST dataset and return train, validation and test dataloaders.
+    
+    Args:
+        batch_size: Number of samples in a batch
+        val_split: Percentage of training data to use for validation
+        
+    Returns:
+    train_loader: Dataloader for training data
+    val_loader: Dataloader for validation data
+    test_loader: Dataloader for test data
+    """
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
     # Load full training dataset
     full_train_dataset = datasets.MNIST(root="./data", train=True, transform=transform, download=True)
@@ -24,6 +36,18 @@ def get_mnist_data_loader(batch_size, val_split=0.1):
     return train_loader, val_loader, test_loader
 
 def get_cifar10_data_loader(batch_size, val_split=0.1):
+    """
+    Load CIFAR-10 dataset and return train, validation and test dataloaders.
+    
+    Args:
+        batch_size: Number of samples in a batch
+        val_split: Percentage of training data to use for validation
+        
+    Returns:
+    train_loader: Dataloader for training data
+    val_loader: Dataloader for validation data
+    test_loader: Dataloader for test data
+    """
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),

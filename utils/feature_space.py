@@ -8,6 +8,18 @@ from utils.data_loader import get_mnist_data_loader
 import umap
 
 def extract_features(model, dataloader, device):
+    
+    '''
+    Extract features from the model for the given dataloader
+    Args:
+        model: PyTorch model
+        dataloader: PyTorch dataloader
+        device: torch device
+        Returns:
+        features: Extracted features
+        labels: True labels
+    '''
+
     model.eval()
     features, labels = [], []
     with torch.no_grad():
@@ -19,6 +31,17 @@ def extract_features(model, dataloader, device):
     return torch.cat(features).cpu().numpy(), torch.cat(labels).cpu().numpy()
 
 def plot_tsne(features, labels, num_classes, method='tsne', loss_type='cross_entropy'):
+
+    ''' 
+    Plot t-SNE visualization of the features
+    Args:
+        features: Extracted features
+        labels: True labels
+        num_classes: Number of classes
+        method: Dimensionality reduction method ('tsne' or 'pca')
+        loss_type: Loss type ('cross_entropy' or 'margin')
+    '''
+
     print(f"Features shape before dimensionality reduction: {features.shape}")
     if method == 'tsne':
         tsne = TSNE(n_components=2, random_state=0)
@@ -40,6 +63,16 @@ def plot_tsne(features, labels, num_classes, method='tsne', loss_type='cross_ent
 
 
 def plot_umap(features, labels, num_classes, loss_type='cross_entropy'):
+
+    '''''
+    Plot UMAP visualization of the features'
+    Args:
+        features: Extracted features
+        labels: True labels
+        num_classes: Number of classes
+        loss_type: Loss type ('cross_entropy' or 'margin')
+    '''
+
     print(f"Features shape before dimensionality reduction: {features.shape}")
     umap_ = umap.UMAP(n_components=2)
     features = umap_.fit_transform(features)
