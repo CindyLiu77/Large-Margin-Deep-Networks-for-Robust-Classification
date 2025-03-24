@@ -148,7 +148,7 @@ class DatasetLoader:
 
         return self.x_train, noisy_y_train, noisy_y_train_oneshot, original_y_train
     
-    def create_data_generator(self, x, y, batch_size=128, augment=False):
+    def create_data_generator(self, x, y, batch_size=64, augment=False):
         """
         Create a data generator
         
