@@ -1,17 +1,202 @@
-# Large-Margin-Deep-Networks-for-Robust-Classification
-MIE424
+# Large Margin Deep Networks
 
-Branch: Forbes
+This repository implements the Large Margin Deep Networks described in the paper "Large Margin Deep Networks for Classification" by Elsayed et al. The implementation includes margin-based loss functions and training scripts for MNIST and CIFAR-10 datasets.
 
-create dir `data` to store cifar/mnist datasets - files are too big to store on github
+## Project Structure
 
-run training from root dir with `python -m training.train_mnist.py` or `python -m training.train_cifar.py`
+```
+.
+├── models/                  # Neural network architectures
+│   ├── mnist_model.py       # Model for MNIST dataset
+│   └── cifar_model.py       # Model for CIFAR-10 dataset
+├── losses/                  # Loss function implementations
+│   └── margin_loss.py       # Large margin loss implementations
+├── utils/                   # Utility functions
+│   ├── data_loader.py       # Data loading utilities
+│   └── adversarial.py       # Adversarial attack utilities
+├── train_mnist.py           # Training script for MNIST
+├── train_cifar.py           # Training script for CIFAR-10
+├── checkpoints/             # Saved model checkpoints
+└── results/                 # Training results and visualizations
+```
 
-To generate feature space visualizations using t-SNE, PCA and UMAP from checkpoints:
+## Installation
 
-run feature_space.py from utils dir with `python -m utils.feature_space`
+Clone the repository and install the required dependencies:
 
-*Ensure you have run the training files to generate checkpoint shards*
+```bash
+git clone https://github.com/yourusername/large-margin-networks.git
+cd large-margin-networks
+pip install -r requirements.txt
+```
 
+## Usage
 
+The training scripts provide a flexible command-line interface to customize experiments:
 
+### Basic Usage
+
+To train with default parameters:
+
+```bash
+python train_mnist.py
+```
+
+or
+
+```bash
+python train_cifar.py
+```
+
+### Loss Functions
+
+The implementation supports several loss functions:
+
+- `cross_entropy`: Standard cross-entropy loss (baseline)
+- `simple_margin`: A simplified margin-based loss
+- `margin`: Full large margin loss implementation
+- `multi_layer_margin`: Margin applied at multiple network layers
+
+### Command-Line Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--loss-type` | Type of loss function | `cross_entropy` |
+| `--gamma` | Margin parameter for margin losses | `10.0` |
+| `--norm` | Norm type for margin computation | `l2` |
+| `--aggregation` | How to aggregate margins (`max` or `sum`) | `max` |
+| `--batch-size` | Batch size | `64` (MNIST), `128` (CIFAR) |
+| `--epochs` | Number of training epochs | `10` |
+| `--lr` | Learning rate | `0.01` |
+| `--momentum` | Momentum for SGD | `0.9` |
+| `--weight-decay` | Weight decay for regularization | `5e-4` |
+| `--optimizer` | Optimizer type | `adam` (MNIST), `sgd` (CIFAR) |
+| `--noisy-labels` | Fraction of labels to corrupt | `0.0` |
+| `--data-fraction` | Fraction of training data to use | `1.0` |
+| `--layers` | Comma-separated list of layer indices | `` |
+| `--seed` | Random seed | `42` |
+
+## Example Commands
+
+### Training with Different Loss Functions
+
+```bash
+# Cross-entropy (baseline)
+python train_mnist.py --loss-type cross_entropy
+
+# Simple margin loss
+python train_mnist.py --loss-type simple_margin --gamma 10.0
+
+# Full margin loss with L2 norm
+python train_mnist.py --loss-type margin --gamma 10.0 --norm l2
+
+# Full margin loss with L-infinity norm
+python train_mnist.py --loss-type margin --gamma 10.0 --norm linf
+
+# Multi-layer margin loss (input, middle, and output layers)
+python train_mnist.py --loss-type multi_layer_margin --gamma 10.0 --layers "0,3,6"
+```
+
+### Experiments with Noisy Labels
+
+To train models with different levels of label noise:
+
+```bash
+# 20% corrupted labels
+python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.2
+
+# 50% corrupted labels
+python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.5
+
+# 80% corrupted labels
+python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.8
+```
+
+### Experiments with Limited Data
+
+To train models with reduced amounts of training data:
+
+```bash
+# 10% of training data
+python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.1
+
+# 1% of training data
+python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.01
+
+# 0.1% of training data
+python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.001
+```
+
+### Advanced Configuration Example
+
+```bash
+python train_cifar.py \
+    --loss-type multi_layer_margin \
+    --gamma 15.0 \
+    --norm linf \
+    --aggregation sum \
+    --layers "0,3,7" \
+    --optimizer rmsprop \
+    --lr 0.001 \
+    --batch-size 64 \
+    --epochs 20 \
+    --noisy-labels 0.3
+```
+
+## Adversarial Robustness Testing
+
+To evaluate a model's robustness to adversarial examples, you can use the adversarial utilities:
+
+```python
+from utils.adversarial import fgsm_attack, ifgsm_attack, evaluate_adversarial
+import torch
+
+# Load a trained model
+model = YourModel()
+model.load_state_dict(torch.load('checkpoints/your_model.pth'))
+model.to(device)
+
+# Evaluate against FGSM attacks
+fgsm_acc = evaluate_adversarial(
+    model, test_loader, 
+    attack_fn=fgsm_attack, 
+    attack_params={'epsilon': 0.1}, 
+    device=device
+)
+print(f"FGSM Accuracy: {fgsm_acc:.2%}")
+
+# Evaluate against I-FGSM attacks
+ifgsm_acc = evaluate_adversarial(
+    model, test_loader, 
+    attack_fn=ifgsm_attack, 
+    attack_params={'epsilon': 0.1, 'alpha': 0.01, 'iterations': 10}, 
+    device=device
+)
+print(f"I-FGSM Accuracy: {ifgsm_acc:.2%}")
+```
+
+For comparing multiple models:
+
+```python
+from utils.adversarial import compare_adversarial_robustness
+
+epsilons = [0.01, 0.05, 0.1, 0.15, 0.2]
+models = [model1, model2, model3]
+dataloaders = [test_loader, test_loader, test_loader]
+names = ['Cross-Entropy', 'L2 Margin', 'L-inf Margin']
+
+results = compare_adversarial_robustness(
+    models, dataloaders, epsilons, 
+    attack_fn=fgsm_attack, 
+    device=device, 
+    names=names
+)
+```
+
+## References
+
+- [Large Margin Deep Networks for Classification](https://arxiv.org/abs/1803.05598) - Elsayed et al., NeurIPS 2018
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

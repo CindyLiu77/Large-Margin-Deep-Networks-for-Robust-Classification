@@ -2,38 +2,287 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class SimpleLargeMarginLoss(nn.Module):
+    """
+    A simplified version of the Large Margin Loss from the paper:
+    "Large Margin Deep Networks for Classification"
+    
+    This implementation focuses on the core idea of margin-based loss
+    without the complexity of computing gradients with respect to intermediate 
+    activations.
+    """
+    def __init__(self, gamma=10.0, aggregation="max"):
+        """
+        Parameters:
+        -----------
+        gamma: float
+            Margin parameter
+        aggregation: str
+            Aggregation type for incorrect classes ('max' or 'sum')
+        """
+        super(SimpleLargeMarginLoss, self).__init__()
+        self.gamma = gamma
+        self.aggregation = aggregation
+    
+    def forward(self, logits, targets):
+        """
+        Forward pass of the simplified large margin loss
+        
+        Parameters:
+        -----------
+        logits: torch.Tensor
+            Model output logits (batch_size, num_classes)
+        targets: torch.Tensor
+            Ground truth class indices (batch_size,)
+            
+        Returns:
+        --------
+        torch.Tensor
+            Loss value
+        """
+        batch_size, num_classes = logits.size()
+        device = logits.device
+        
+        # Get one-hot encoding of targets
+        targets_one_hot = F.one_hot(targets, num_classes).float()
+        
+        # Get correct class scores for each sample
+        correct_class_scores = torch.sum(logits * targets_one_hot, dim=1, keepdim=True)
+        
+        # Compute margin violations: gamma + (incorrect_score - correct_score)
+        margin_violations = self.gamma + logits - correct_class_scores
+        
+        # Mask out the correct class (don't compute margin for the correct class)
+        mask = 1.0 - targets_one_hot
+        margin_violations = margin_violations * mask
+        
+        # Apply ReLU to keep only positive violations
+        margin_violations = F.relu(margin_violations)
+        
+        # Aggregate margin violations based on specified method
+        if self.aggregation == "max":
+            # For each sample, take the maximum violation across all incorrect classes
+            loss = torch.max(margin_violations, dim=1)[0]
+        else:  # sum
+            # For each sample, sum violations across all incorrect classes
+            loss = torch.sum(margin_violations, dim=1)
+        
+        # Average over the batch
+        return torch.mean(loss)
+
+
 class LargeMarginLoss(nn.Module):
-    def __init__(self, gamma=1.0, norm="l2", aggregation="max", epsilon=1e-6):
-        '''
-        gamma: margin param
-        norm: norm type ('l1', 'l2', 'linf')
-        aggregation: aggregation type for incorrect classes ('max' or 'sum')
-        epsilon: small value to avoid division by zero
-        '''
+    """
+    Implementation of the Large Margin Loss from the paper:
+    "Large Margin Deep Networks for Classification"
+    
+    This implementation supports computing margin based on gradients
+    with respect to input or intermediate layer activations.
+    """
+    def __init__(self, gamma=10.0, norm="l2", aggregation="max", epsilon=1e-6):
+        """
+        Parameters:
+        -----------
+        gamma: float
+            Margin parameter
+        norm: str
+            Norm type for computing distance ('l1', 'l2', 'linf')
+        aggregation: str
+            Aggregation type for incorrect classes ('max' or 'sum')
+        epsilon: float
+            Small value to avoid division by zero
+        """
         super(LargeMarginLoss, self).__init__()
         self.gamma = gamma
         self.norm = norm
         self.aggregation = aggregation
         self.epsilon = epsilon
-
-    def forward(self, x, y):
-        '''
-        x: input tensor (batch_size, num_classes)
-        y: target tensor (batch_size, num_classes)
-        '''
+    
+    def compute_dual_norm(self, grad_diff):
+        """
+        Compute the dual norm of gradient differences
         
-        batch_size, num_classes = x.size()
-        correct_class_scores = x[torch.arange(batch_size), y].unsqueeze(1)
-
-        diff = x - correct_class_scores
-        diff.scatter_(1, y.unsqueeze(1), float('-inf'))
-
-        if self.aggregation == 'max':
-            margin_loss = torch.max(self.gamma + diff, dim=1)[0]
-        elif self.aggregation == 'sum':
-            margin_loss = torch.sum(torch.exp(self.gamma + diff), dim=1)
+        Parameters:
+        -----------
+        grad_diff: torch.Tensor
+            Gradient difference tensor
+            
+        Returns:
+        --------
+        torch.Tensor
+            Dual norm of gradient differences
+        """
+        if self.norm == "l1":
+            # Dual of l1 is linf
+            return torch.amax(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
+        elif self.norm == "l2":
+            # Dual of l2 is l2
+            return torch.sqrt(torch.sum(grad_diff**2, dim=list(range(1, grad_diff.dim()))) + self.epsilon)
+        elif self.norm == "linf":
+            # Dual of linf is l1
+            return torch.sum(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
         else:
-            raise ValueError("Invalid aggregation type")
+            raise ValueError(f"Unsupported norm type: {self.norm}")
+    
+    def forward(self, logits, targets, layer_activations=None):
+        """
+        Forward pass of the large margin loss
         
-        return torch.mean(margin_loss)
+        Parameters:
+        -----------
+        logits: torch.Tensor
+            Model output logits (batch_size, num_classes)
+        targets: torch.Tensor
+            Ground truth class indices (batch_size,)
+        layer_activations: torch.Tensor or None
+            Layer activations to compute margin on. If None, defaults to input.
+            
+        Returns:
+        --------
+        torch.Tensor
+            Loss value
+        """
+        batch_size, num_classes = logits.size()
+        device = logits.device
+        
+        # If no activations provided, just use the simple margin loss
+        if layer_activations is None:
+            return SimpleLargeMarginLoss(self.gamma, self.aggregation)(logits, targets)
+        
+        # Make sure activations require gradient
+        if not layer_activations.requires_grad:
+            layer_activations.requires_grad_(True)
+        
+        # Create one-hot encoding of targets
+        targets_one_hot = F.one_hot(targets, num_classes).float().to(device)
+        
+        # Get scores for the correct class
+        correct_class_scores = torch.sum(logits * targets_one_hot, dim=1)
+        
+        # Initialize loss
+        loss = torch.tensor(0.0, device=device)
+        
+        # Compute loss for each sample in the batch
+        for i in range(batch_size):
+            target = targets[i]
+            correct_score = correct_class_scores[i]
+            
+            # Calculate max margin violation for this sample
+            max_violation = torch.tensor(-float('inf'), device=device)
+            
+            for j in range(num_classes):
+                if j == target:
+                    continue
+                
+                # Compute gradient of correct class score with respect to activations
+                grad_correct = torch.autograd.grad(
+                    correct_score, layer_activations, 
+                    create_graph=True, retain_graph=True
+                )[0][i]
+                
+                # Compute gradient of incorrect class score with respect to activations
+                grad_incorrect = torch.autograd.grad(
+                    logits[i, j], layer_activations, 
+                    create_graph=True, retain_graph=True
+                )[0][i]
+                
+                # Compute gradient difference
+                grad_diff = grad_incorrect - grad_correct
+                
+                # Compute dual norm
+                grad_diff_norm = self.compute_dual_norm(grad_diff.unsqueeze(0)).squeeze() + self.epsilon
+                
+                # Compute score difference
+                score_diff = logits[i, j] - correct_score
+                
+                # Compute margin violation
+                violation = self.gamma + score_diff / grad_diff_norm
+                violation = F.relu(violation)
+                
+                if self.aggregation == "max":
+                    max_violation = torch.max(max_violation, violation)
+                else:  # sum
+                    if torch.isinf(max_violation):
+                        max_violation = violation
+                    else:
+                        max_violation += violation
+            
+            loss += max_violation
+        
+        return loss / batch_size
 
+
+class MultiLayerMarginLoss(nn.Module):
+    """
+    Implementation of Large Margin Loss that can be applied to multiple layers.
+    """
+    def __init__(self, layers, gamma=10.0, norm="l2", aggregation="max", epsilon=1e-6):
+        """
+        Parameters:
+        -----------
+        layers: list of int
+            Indices of layers to apply margin on (-1 for output, 0 for input, etc.)
+        gamma: float or list of float
+            Margin parameter(s) for each layer
+        norm: str or list of str
+            Norm type(s) for computing distance
+        aggregation: str
+            Aggregation type for incorrect classes
+        epsilon: float
+            Small value to avoid division by zero
+        """
+        super(MultiLayerMarginLoss, self).__init__()
+        self.layers = layers
+        
+        # Handle gamma as scalar or list
+        if isinstance(gamma, (int, float)):
+            self.gamma = [gamma] * len(layers)
+        else:
+            self.gamma = gamma
+            
+        # Handle norm as string or list
+        if isinstance(norm, str):
+            self.norm = [norm] * len(layers)
+        else:
+            self.norm = norm
+            
+        self.aggregation = aggregation
+        self.epsilon = epsilon
+        
+        # Create margin loss for each layer
+        self.layer_losses = nn.ModuleList([
+            LargeMarginLoss(g, n, aggregation, epsilon)
+            for g, n in zip(self.gamma, self.norm)
+        ])
+    
+    def forward(self, logits, targets, activations):
+        """
+        Forward pass of the multi-layer large margin loss
+        
+        Parameters:
+        -----------
+        logits: torch.Tensor
+            Model output logits
+        targets: torch.Tensor
+            Ground truth class indices
+        activations: list of torch.Tensor
+            List of activations from different layers
+            
+        Returns:
+        --------
+        torch.Tensor
+            Loss value
+        """
+        if len(activations) < max(abs(layer_idx) for layer_idx in self.layers) + 1:
+            raise ValueError(f"Not enough activations provided. Need at least {max(abs(layer_idx) for layer_idx in self.layers) + 1}, got {len(activations)}")
+        
+        # Initialize total loss
+        total_loss = 0.0
+        
+        # Compute loss for each layer
+        for i, layer_idx in enumerate(self.layers):
+            layer_loss = self.layer_losses[i]
+            layer_activation = activations[layer_idx]
+            total_loss += layer_loss(logits, targets, layer_activation)
+            
+        return total_loss / len(self.layers)
