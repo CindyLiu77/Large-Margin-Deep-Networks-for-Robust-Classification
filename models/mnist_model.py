@@ -15,36 +15,35 @@ class MNISTModel(nn.Module):
     def forward(self, x, return_activations=False):
         activations = []
         
-        # Input layer
+        # input
         activations.append(x)
         
-        # First conv layer
+        # 1
         x = self.conv1(x)
         activations.append(x)
         x = F.relu(x)
         
-        # Second conv layer
+        # 2
         x = self.conv2(x)
         activations.append(x)
         x = F.relu(x)
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
         
-        # Flatten
+        # 3
         x = torch.flatten(x, 1)
         activations.append(x)
         
-        # First FC layer
+        # 4
         x = self.fc1(x)
         activations.append(x)
         x = F.relu(x)
         x = self.dropout2(x)
         
-        # Output layer
+        # 5
         x = self.fc2(x)
         activations.append(x)
         
-        # Return raw logits instead of log_softmax for compatibility with different loss functions
         if return_activations:
             return x, activations
         else:

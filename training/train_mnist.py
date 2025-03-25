@@ -9,8 +9,10 @@ from losses.margin_loss import SimpleLargeMarginLoss, LargeMarginLoss, MultiLaye
 import argparse
 import numpy as np
 from pathlib import Path
+from utils.feature_space import visualize_features
 
 def parse_args():
+    # first time ive used smtg like this, pretty dope - this adds cmd line args, check README for more info
     parser = argparse.ArgumentParser(description='MNIST Training with Margin Loss')
     parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
@@ -35,11 +37,21 @@ def parse_args():
                         help='Fraction of training data to use (0.0 to 1.0)')
     parser.add_argument('--layers', type=str, default='', 
                         help='Comma-separated list of layer indices for multi-layer margin')
+    
+    # Add feature visualization options
+    parser.add_argument('--visualize', action='store_true', 
+                        help='Enable feature visualization')
+    parser.add_argument('--vis-method', type=str, default='tsne', 
+                        choices=['tsne', 'pca', 'umap'],
+                        help='Visualization method for feature space')
+    parser.add_argument('--vis-subset', type=int, default=1000,
+                        help='Number of samples to use for visualization (use smaller number for faster visualization)')
+    
     return parser.parse_args()
 
 def corrupt_labels(labels, corruption_fraction):
     """
-    Corrupt a fraction of the labels randomly.
+    Corrupt a fraction of the labels randomly for noisy label training.
     """
     if corruption_fraction <= 0:
         return labels
@@ -50,13 +62,10 @@ def corrupt_labels(labels, corruption_fraction):
     if num_corrupt <= 0:
         return labels
     
-    # Create a copy of labels
     corrupted_labels = labels.clone()
     
     # Randomly select indices to corrupt
     corrupt_indices = np.random.choice(num_labels, num_corrupt, replace=False)
-    
-    # For each selected index, randomly assign a label different from the original
     for idx in corrupt_indices:
         original_label = labels[idx].item()
         new_label = np.random.choice([l for l in range(10) if l != original_label])
@@ -77,7 +86,6 @@ def evaluate(model, dataloader, criterion, device):
         for images, labels in dataloader:
             images, labels = images.to(device), labels.to(device)
             
-            # Forward pass
             if hasattr(model, 'return_activations') and hasattr(criterion, 'layers'):
                 outputs, activations = model(images, return_activations=True)
                 loss = criterion(outputs, labels, activations)
@@ -85,12 +93,9 @@ def evaluate(model, dataloader, criterion, device):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
             
-            # Compute accuracy
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
-            
-            # Accumulate loss
             total_loss += loss.item() * labels.size(0)
 
             # print(f"Batch loss: {loss.item():.4f}, accuracy: {correct:.4f}")
@@ -104,41 +109,30 @@ def evaluate(model, dataloader, criterion, device):
 
 def main():
     args = parse_args()
-    
-    # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
-    
-    # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Create directories for checkpoints and results
     Path("checkpoints").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
     
-    # Load data
     train_loader, val_loader, test_loader = get_mnist_data_loader(args.batch_size)
     
     # If using reduced data, create a subset of the training data
     if args.data_fraction < 1.0:
-        # Temporarily convert to list for easier slicing
         train_data_list = []
         for batch in train_loader:
             images, labels = batch
             for i in range(len(images)):
                 train_data_list.append((images[i], labels[i]))
-        
-        # Determine how many samples to keep
+
         num_samples = int(len(train_data_list) * args.data_fraction)
-        
-        # Randomly select samples
         selected_indices = np.random.choice(len(train_data_list), num_samples, replace=False)
         selected_data = [train_data_list[i] for i in selected_indices]
-        
-        # Create a new dataset and dataloader
+
         class SimpleDataset(torch.utils.data.Dataset):
             def __init__(self, data):
                 self.data = data
@@ -159,11 +153,10 @@ def main():
         )
         
         print(f"Reduced training set size: {num_samples} samples")
-    
-    # Create model
+
     model = MNISTModel().to(device)
     
-    # Create loss function based on args
+    #choose loss
     if args.loss_type == 'cross_entropy':
         criterion = nn.CrossEntropyLoss()
     elif args.loss_type == 'simple_margin':
@@ -178,7 +171,7 @@ def main():
         criterion = MultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
                                         norm=args.norm, aggregation=args.aggregation)
     
-    # Create optimizer
+    # choose optimizer
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, 
                              momentum=args.momentum, weight_decay=args.weight_decay)
@@ -189,16 +182,13 @@ def main():
         optimizer = optim.RMSprop(model.parameters(), lr=args.lr, 
                                  weight_decay=args.weight_decay)
     
-    # Create learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=2, verbose=True
     )
     
-    # Track metrics
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
     
-    # Training loop
     print(f"Starting training for {args.epochs} epochs...")
     for epoch in range(args.epochs):
         model.train()
@@ -209,14 +199,14 @@ def main():
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             
-            # Apply noisy labels if specified
+            # Noisy here
             if args.noisy_labels > 0:
                 labels = corrupt_labels(labels, args.noisy_labels)
             
-            # Zero gradients
+            # Zero grads
             optimizer.zero_grad()
             
-            # Forward pass with appropriate loss function
+            # Forward pass
             if args.loss_type == 'multi_layer_margin':
                 outputs, activations = model(images, return_activations=True)
                 loss = criterion(outputs, labels, activations)
@@ -228,38 +218,30 @@ def main():
             loss.backward()
             optimizer.step()
             
-            # Track statistics
             epoch_loss += loss.item() * labels.size(0)
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
         
-        # Compute epoch metrics
         train_loss = epoch_loss / total
         train_acc = correct / total
-        
-        # Evaluation
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         
-        # Update learning rate
         scheduler.step(val_acc)
         
-        # Store metrics
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         train_accs.append(train_acc)
         val_accs.append(val_acc)
         
-        # Print progress
         print(f"Epoch {epoch+1}/{args.epochs}, "
               f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2%}, "
               f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
     
-    # Final evaluation on test set
+    # Test set eval
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
     print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2%}")
     
-    # Save model
     model_name = f"mnist_model_{args.loss_type}"
     if args.noisy_labels > 0:
         model_name += f"_noisy{int(args.noisy_labels*100)}"
@@ -268,11 +250,32 @@ def main():
     
     torch.save(model.state_dict(), f"checkpoints/{model_name}.pth")
     
-    # Visualize test results
     plot_test_results(model, test_loader, device, model_name)
-    
-    # Plot training curves
     plot_training_curves(train_losses, val_losses, train_accs, val_accs, model_name)
+
+    # Feature visualization
+    if args.visualize:
+        print(f"Visualizing features using {args.vis_method}...")
+        
+        # Create a subset of test data for visualization (for speed)
+        subset_indices = np.random.choice(len(test_loader.dataset), args.vis_subset, replace=False)
+        subset = torch.utils.data.Subset(test_loader.dataset, subset_indices)
+        subset_loader = torch.utils.data.DataLoader(
+            subset, 
+            batch_size=args.batch_size,
+            shuffle=False
+        )
+        
+        vis_save_path = f"results/{model_name}_{args.vis_method}_visualization.png"
+        visualize_features(
+            model=model,
+            dataloader=subset_loader, 
+            device=device,
+            method=args.vis_method,
+            loss_type=args.loss_type,
+            save_path=vis_save_path
+        )
+        print(f"Feature visualization saved to {vis_save_path}")
 
 def plot_test_results(model, test_loader, device, model_name, num_images=10):
     """
@@ -280,17 +283,14 @@ def plot_test_results(model, test_loader, device, model_name, num_images=10):
     """
     model.eval()
     
-    # Get a batch of images
+    # Get a batch of images + pred
     dataiter = iter(test_loader)
     images, labels = next(dataiter)
     images, labels = images[:num_images].to(device), labels[:num_images].to(device)
-    
-    # Get predictions
     with torch.no_grad():
         outputs = model(images)
         _, predictions = torch.max(outputs, 1)
     
-    # Plot
     fig, axes = plt.subplots(1, num_images, figsize=(15, 3))
     for i in range(num_images):
         img = images[i].cpu().numpy().squeeze()
@@ -308,7 +308,6 @@ def plot_training_curves(train_losses, val_losses, train_accs, val_accs, model_n
     """
     plt.figure(figsize=(12, 5))
     
-    # Plot losses
     plt.subplot(1, 2, 1)
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Val Loss', linestyle='--')
@@ -316,8 +315,7 @@ def plot_training_curves(train_losses, val_losses, train_accs, val_accs, model_n
     plt.ylabel('Loss')
     plt.title('Loss Curves')
     plt.legend()
-    
-    # Plot accuracies
+
     plt.subplot(1, 2, 2)
     plt.plot(train_accs, label='Train Acc')
     plt.plot(val_accs, label='Val Acc', linestyle='--')

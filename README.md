@@ -1,6 +1,6 @@
 # Large Margin Deep Networks
 
-This repository implements the Large Margin Deep Networks described in the paper "Large Margin Deep Networks for Classification" by Elsayed et al. The implementation includes margin-based loss functions and training scripts for MNIST and CIFAR-10 datasets.
+This repository implements the Large Margin Deep Networks described in the paper "Large Margin Deep Networks for Classification" by Elsayed et al.
 
 ## Project Structure
 
@@ -20,32 +20,22 @@ This repository implements the Large Margin Deep Networks described in the paper
 └── results/                 # Training results and visualizations
 ```
 
-## Installation
-
-Clone the repository and install the required dependencies:
-
-```bash
-git clone https://github.com/yourusername/large-margin-networks.git
-cd large-margin-networks
-pip install -r requirements.txt
-```
-
 ## Usage
 
 The training scripts provide a flexible command-line interface to customize experiments:
 
 ### Basic Usage
 
-To train with default parameters:
+To train with default parameters, start in thr root dir and use:
 
 ```bash
-python train_mnist.py
+python -m train_mnist.py
 ```
 
 or
 
 ```bash
-python train_cifar.py
+python -m train_cifar.py
 ```
 
 ### Loss Functions
@@ -76,25 +66,27 @@ The implementation supports several loss functions:
 | `--layers` | Comma-separated list of layer indices | `` |
 | `--seed` | Random seed | `42` |
 
+*Note: for MNIST the layers range from 0-5, and for CIFAR the layers range []. OMit spaces when specifying multiple layers using the `--layers` flag
+
 ## Example Commands
 
 ### Training with Different Loss Functions
 
 ```bash
 # Cross-entropy (baseline)
-python train_mnist.py --loss-type cross_entropy
+python -m train_mnist.py --loss-type cross_entropy
 
 # Simple margin loss
-python train_mnist.py --loss-type simple_margin --gamma 10.0
+python -m train_mnist.py --loss-type simple_margin --gamma 10.0
 
 # Full margin loss with L2 norm
-python train_mnist.py --loss-type margin --gamma 10.0 --norm l2
+python -m train_mnist.py --loss-type margin --gamma 10.0 --norm l2
 
 # Full margin loss with L-infinity norm
-python train_mnist.py --loss-type margin --gamma 10.0 --norm linf
+python -m train_mnist.py --loss-type margin --gamma 10.0 --norm linf
 
 # Multi-layer margin loss (input, middle, and output layers)
-python train_mnist.py --loss-type multi_layer_margin --gamma 10.0 --layers "0,3,6"
+python -m train_mnist.py --loss-type multi_layer_margin --gamma 10.0 --layers "0,3,5"
 ```
 
 ### Experiments with Noisy Labels
@@ -103,13 +95,13 @@ To train models with different levels of label noise:
 
 ```bash
 # 20% corrupted labels
-python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.2
+python -m train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.2
 
 # 50% corrupted labels
-python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.5
+python -m train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.5
 
 # 80% corrupted labels
-python train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.8
+python -m train_cifar.py --loss-type margin --gamma 15.0 --noisy-labels 0.8
 ```
 
 ### Experiments with Limited Data
@@ -118,19 +110,19 @@ To train models with reduced amounts of training data:
 
 ```bash
 # 10% of training data
-python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.1
+python -m train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.1
 
 # 1% of training data
-python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.01
+python -m train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.01
 
 # 0.1% of training data
-python train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.001
+python -m train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.001
 ```
 
 ### Advanced Configuration Example
 
 ```bash
-python train_cifar.py \
+python -m train_cifar.py \
     --loss-type multi_layer_margin \
     --gamma 15.0 \
     --norm linf \
