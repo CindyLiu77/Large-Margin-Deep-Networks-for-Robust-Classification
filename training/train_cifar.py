@@ -27,8 +27,8 @@ class SimpleDataset(torch.utils.data.Dataset):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='CIFAR-10 Training with Margin Loss')
-    parser.add_argument('--batch-size', type=int, default=128, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -148,7 +148,7 @@ def main():
             train_dataset, 
             batch_size=args.batch_size, 
             shuffle=True,
-            num_workers=4,
+            num_workers=0,
             pin_memory=True
         )
         
