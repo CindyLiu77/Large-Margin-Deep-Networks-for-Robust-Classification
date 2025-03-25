@@ -11,6 +11,19 @@ import numpy as np
 from pathlib import Path
 from utils.feature_space import visualize_features
 
+# make compiler shut up
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+class SimpleDataset(torch.utils.data.Dataset):
+    def __init__(self, data):
+        self.data = data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
+
 def parse_args():
     # first time ive used smtg like this, pretty dope - this adds cmd line args, check README for more info
     parser = argparse.ArgumentParser(description='MNIST Training with Margin Loss')
@@ -132,23 +145,13 @@ def main():
         num_samples = int(len(train_data_list) * args.data_fraction)
         selected_indices = np.random.choice(len(train_data_list), num_samples, replace=False)
         selected_data = [train_data_list[i] for i in selected_indices]
-
-        class SimpleDataset(torch.utils.data.Dataset):
-            def __init__(self, data):
-                self.data = data
-            
-            def __len__(self):
-                return len(self.data)
-            
-            def __getitem__(self, idx):
-                return self.data[idx]
         
         train_dataset = SimpleDataset(selected_data)
         train_loader = torch.utils.data.DataLoader(
             train_dataset, 
             batch_size=args.batch_size, 
             shuffle=True,
-            num_workers=4,
+            num_workers=0,
             pin_memory=True
         )
         
@@ -244,9 +247,9 @@ def main():
     
     model_name = f"mnist_model_{args.loss_type}"
     if args.noisy_labels > 0:
-        model_name += f"_noisy{int(args.noisy_labels*100)}"
+        model_name += f"_noisy{int(args.noisy_labels*100)}%"
     if args.data_fraction < 1.0:
-        model_name += f"_data{int(args.data_fraction*100)}"
+        model_name += f"_data{int(args.data_fraction*100)}%"
     
     torch.save(model.state_dict(), f"checkpoints/{model_name}.pth")
     

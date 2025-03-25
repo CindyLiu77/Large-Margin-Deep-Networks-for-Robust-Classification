@@ -135,7 +135,17 @@ python -m train_cifar.py \
     --noisy-labels 0.3
 ```
 
+### UMAP/TSNE
+
+To generate UMAP/tSNE plots, use the visualize.py file, with the `.pth` file for the model argument, the `--method` flag to designate between umap and tsne, and the `--num-samples` flag to choose how many :
+
+`python -m training.visualize --models checkpoints/mnist_model_margin.pth --method umap --num-samples 1000`
+
+Note: the mnist dataset has ~10,000 samples
+
 ## Adversarial Robustness Testing
+
+**WORK IN PROGRESS
 
 To evaluate a model's robustness to adversarial examples, you can use the adversarial utilities:
 
