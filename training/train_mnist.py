@@ -5,11 +5,15 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from utils.data_loader import get_mnist_data_loader
 from models.mnist_model import MNISTModel
-from losses.margin_loss import SimpleLargeMarginLoss, LargeMarginLoss, MultiLayerMarginLoss
+from losses.margin_loss import SimpleLargeMarginLoss, LargeMarginLoss, MultiLayerMarginLoss, TrueMultiLayerMarginLoss
 import argparse
 import numpy as np
 from pathlib import Path
 from utils.feature_space import visualize_features
+from torch.cuda.amp import autocast, GradScaler
+import time
+from tqdm import tqdm
+import gc
 
 # make compiler shut up
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -33,7 +37,7 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--loss-type', type=str, default='cross_entropy', 
-                        choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin'],
+                        choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin', 'true_multi_layer_margin'],
                         help='Loss function to use')
     parser.add_argument('--gamma', type=float, default=10.0, help='Margin parameter')
     parser.add_argument('--norm', type=str, default='l2', choices=['l1', 'l2', 'linf'],
@@ -51,7 +55,7 @@ def parse_args():
     parser.add_argument('--layers', type=str, default='', 
                         help='Comma-separated list of layer indices for multi-layer margin')
     
-    # Add feature visualization options
+    # visualization options
     parser.add_argument('--visualize', action='store_true', 
                         help='Enable feature visualization')
     parser.add_argument('--vis-method', type=str, default='tsne', 
@@ -59,6 +63,22 @@ def parse_args():
                         help='Visualization method for feature space')
     parser.add_argument('--vis-subset', type=int, default=1000,
                         help='Number of samples to use for visualization (use smaller number for faster visualization)')
+    
+    # Add mixed precision flag
+    parser.add_argument('--mixed-precision', action='store_true',
+                        help='Enable mixed precision training (FP16)')
+    
+    # Add tracking verbosity
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable detailed timing information for debugging slow training')
+    
+    # only consider top K incorrect classes for margin loss, None for all classes
+    parser.add_argument('--top-k', type=int, default=None, 
+                        help='Top K incorrect classes to consider for margin loss')
+    
+    # vectorized implementation
+    parser.add_argument('--vectorize', action='store_true',
+                        help='Use vectorized implementation for margin loss')
     
     return parser.parse_args()
 
@@ -77,7 +97,7 @@ def corrupt_labels(labels, corruption_fraction):
     
     corrupted_labels = labels.clone()
     
-    # Randomly select indices to corrupt
+    # randomly select indices to corrupt
     corrupt_indices = np.random.choice(num_labels, num_corrupt, replace=False)
     for idx in corrupt_indices:
         original_label = labels[idx].item()
@@ -86,7 +106,7 @@ def corrupt_labels(labels, corruption_fraction):
     
     return corrupted_labels
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, use_mixed_precision=False):
     """
     Evaluate the model on the given dataloader.
     """
@@ -95,25 +115,31 @@ def evaluate(model, dataloader, criterion, device):
     correct = 0
     total = 0
     
+    # Add progress bar for evaluation
+    eval_pbar = tqdm(dataloader, desc="Evaluating")
+    
     with torch.no_grad():
-        for images, labels in dataloader:
+        for images, labels in eval_pbar:
             images, labels = images.to(device), labels.to(device)
             
-            if hasattr(model, 'return_activations') and hasattr(criterion, 'layers'):
-                outputs, activations = model(images, return_activations=True)
-                loss = criterion(outputs, labels, activations)
-            else:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            # Use autocast for mixed precision during evaluation
+            with autocast(enabled=use_mixed_precision):
+                if hasattr(model, 'return_activations') and hasattr(criterion, 'layers'):
+                    outputs, activations = model(images, return_activations=True)
+                    loss = criterion(outputs, labels, activations)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
             
             _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
+            batch_size = labels.size(0)
+            total += batch_size
             correct += (predicted == labels).sum().item()
-            total_loss += loss.item() * labels.size(0)
-
-            # print(f"Batch loss: {loss.item():.4f}, accuracy: {correct:.4f}")
-            # print(f"Logits mean: {outputs.mean().item():.4f}, std: {outputs.std().item():.4f}")
-            # print(f"Predictions distribution: {torch.bincount(predicted, minlength=10)}")
+            total_loss += loss.item() * batch_size
+            
+            # Update progress bar
+            current_acc = correct / total
+            eval_pbar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{current_acc:.4f}"})
     
     avg_loss = total_loss / total
     accuracy = correct / total
@@ -129,12 +155,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Initialize gradient scaler for mixed precision training
+    scaler = GradScaler(enabled=args.mixed_precision)
+    if args.mixed_precision:
+        print("Using mixed precision training (FP16)")
+    
     Path("checkpoints").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
     
     train_loader, val_loader, test_loader = get_mnist_data_loader(args.batch_size)
     
-    # If using reduced data, create a subset of the training data
+    # create a subset of the training data
     if args.data_fraction < 1.0:
         train_data_list = []
         for batch in train_loader:
@@ -173,6 +204,12 @@ def main():
         layers = [int(layer.strip()) for layer in args.layers.split(',')]
         criterion = MultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
                                         norm=args.norm, aggregation=args.aggregation)
+    elif args.loss_type == 'true_multi_layer_margin':
+        if not args.layers:
+            raise ValueError("Must specify layers for true_multi_layer_margin loss")
+        layers = [int(layer.strip()) for layer in args.layers.split(',')]
+        criterion = TrueMultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
+                                        norm=args.norm, aggregation=args.aggregation, vectorize=args.vectorize, top_k=args.top_k)
     
     # choose optimizer
     if args.optimizer == 'sgd':
@@ -193,13 +230,32 @@ def main():
     train_accs, val_accs = [], []
     
     print(f"Starting training for {args.epochs} epochs...")
+    
+    # Tracking variables for timing
+    total_forward_time = 0
+    total_backward_time = 0
+    total_optimization_time = 0
+    
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
         correct = 0
         total = 0
+        epoch_start_time = time.time()
         
-        for images, labels in train_loader:
+        # Create progress bar for epoch
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        
+        # Time tracking for this epoch
+        epoch_forward_time = 0
+        epoch_backward_time = 0
+        epoch_optim_time = 0
+        
+        # Keep track of slow batches
+        slowest_batches = []
+        
+        for batch_idx, (images, labels) in enumerate(train_pbar):
+            batch_start_time = time.time()
             images, labels = images.to(device), labels.to(device)
             
             # Noisy here
@@ -209,26 +265,101 @@ def main():
             # Zero grads
             optimizer.zero_grad()
             
-            # Forward pass
-            if args.loss_type == 'multi_layer_margin':
-                outputs, activations = model(images, return_activations=True)
-                loss = criterion(outputs, labels, activations)
-            else:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            # Track forward pass time
+            forward_start = time.time()
             
-            # Backward pass and optimize
-            loss.backward()
-            optimizer.step()
+            # Use autocast for mixed precision during forward pass
+            with autocast(enabled=args.mixed_precision):
+                # Forward pass
+                if args.loss_type == 'multi_layer_margin' or args.loss_type == 'true_multi_layer_margin':
+                    outputs, activations = model(images, return_activations=True)
+                    loss = criterion(outputs, labels, activations)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+            
+            forward_time = time.time() - forward_start
+            epoch_forward_time += forward_time
+            
+            # Track backward pass time
+            backward_start = time.time()
+            
+            # Use scaler for backward pass and optimizer step with mixed precision
+            if args.mixed_precision:
+                scaler.scale(loss).backward()
+            else:
+                # Standard backward pass
+                loss.backward()
+                
+            backward_time = time.time() - backward_start
+            epoch_backward_time += backward_time
+            
+            # Track optimization time
+            optim_start = time.time()
+            
+            if args.mixed_precision:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+                
+            optim_time = time.time() - optim_start
+            epoch_optim_time += optim_time
+            
+            # Calculate batch time
+            batch_time = time.time() - batch_start_time
+            
+            # Track slowest batches
+            slowest_batches.append((batch_idx, batch_time, forward_time, backward_time, optim_time))
+            if len(slowest_batches) > 5:  # Keep only the 5 slowest batches
+                slowest_batches.sort(key=lambda x: x[1], reverse=True)
+                slowest_batches = slowest_batches[:5]
             
             epoch_loss += loss.item() * labels.size(0)
             _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
+            batch_size = labels.size(0)
+            total += batch_size
             correct += (predicted == labels).sum().item()
+            
+            # Calculate current epoch metrics
+            current_loss = epoch_loss / total
+            current_acc = correct / total
+            
+            # Update progress bar with metrics
+            train_pbar.set_postfix({
+                "loss": f"{current_loss:.4f}",
+                "acc": f"{current_acc:.4f}",
+                "batch_time": f"{batch_time:.2f}s",
+                "forward": f"{forward_time:.2f}s",
+                "backward": f"{backward_time:.2f}s"
+            })
+            
+            # Print detailed timing for slow batches
+            if args.verbose and batch_time > 5.0:  # If batch takes more than 5 seconds
+                print(f"\nSlow batch {batch_idx}: Total={batch_time:.2f}s, "
+                      f"Forward={forward_time:.2f}s, Backward={backward_time:.2f}s, "
+                      f"Optim={optim_time:.2f}s")
+                
+                # Print GPU memory usage
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)
+                    max_allocated = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+                    reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)
+                    print(f"GPU Memory: {allocated:.2f}GB allocated, {max_allocated:.2f}GB max, "
+                          f"{reserved:.2f}GB reserved")
+            
+            # Force garbage collection periodically
+            if batch_idx % 10 == 0:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
+        # Calculate epoch metrics
         train_loss = epoch_loss / total
         train_acc = correct / total
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        
+        print(f"\nEvaluating on validation set...")
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device, args.mixed_precision)
         
         scheduler.step(val_acc)
         
@@ -237,12 +368,49 @@ def main():
         train_accs.append(train_acc)
         val_accs.append(val_acc)
         
-        print(f"Epoch {epoch+1}/{args.epochs}, "
-              f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2%}, "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
+        # Calculate total epoch time
+        epoch_time = time.time() - epoch_start_time
+        
+        # Update overall timing
+        total_forward_time += epoch_forward_time
+        total_backward_time += epoch_backward_time
+        total_optimization_time += epoch_optim_time
+        
+        # Print epoch summary with timing information
+        print(f"Epoch {epoch+1}/{args.epochs} completed in {epoch_time:.2f}s")
+        print(f"  Forward: {epoch_forward_time:.2f}s, Backward: {epoch_backward_time:.2f}s, "
+              f"Optimization: {epoch_optim_time:.2f}s")
+        print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2%}")
+        print(f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
+        
+        # Print the 5 slowest batches for this epoch
+        if args.verbose:
+            print("\nSlowest batches in this epoch:")
+            for i, (batch_idx, batch_time, fwd_time, bwd_time, opt_time) in enumerate(slowest_batches):
+                print(f"  {i+1}. Batch {batch_idx}: Total={batch_time:.2f}s, "
+                      f"Forward={fwd_time:.2f}s, Backward={bwd_time:.2f}s, "
+                      f"Optim={opt_time:.2f}s")
+        
+        # Estimate remaining time
+        elapsed_epochs = epoch + 1
+        avg_epoch_time = epoch_time
+        remaining_epochs = args.epochs - elapsed_epochs
+        estimated_remaining_time = remaining_epochs * avg_epoch_time
+        
+        hours, remainder = divmod(estimated_remaining_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print(f"Estimated remaining time: {int(hours)}h {int(minutes)}m {int(seconds)}s")
+    
+    # Print overall timing summary
+    total_training_time = time.time() - epoch_start_time
+    print(f"\nTraining completed in {total_training_time:.2f} seconds")
+    print(f"Average times per epoch: Forward={total_forward_time/args.epochs:.2f}s, "
+          f"Backward={total_backward_time/args.epochs:.2f}s, "
+          f"Optimization={total_optimization_time/args.epochs:.2f}s")
     
     # Test set eval
-    test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+    print("\nEvaluating on test set...")
+    test_loss, test_acc = evaluate(model, test_loader, criterion, device, args.mixed_precision)
     print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2%}")
     
     model_name = f"mnist_model_{args.loss_type}"
@@ -250,6 +418,8 @@ def main():
         model_name += f"_noisy{int(args.noisy_labels*100)}%"
     if args.data_fraction < 1.0:
         model_name += f"_data{int(args.data_fraction*100)}%"
+    if args.mixed_precision:
+        model_name += "_fp16"
     
     torch.save(model.state_dict(), f"checkpoints/{model_name}.pth")
     

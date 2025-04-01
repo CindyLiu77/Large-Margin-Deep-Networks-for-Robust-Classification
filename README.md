@@ -2,41 +2,9 @@
 
 This repository implements the Large Margin Deep Networks described in the paper "Large Margin Deep Networks for Classification" by Elsayed et al.
 
-## Project Structure
-
-```
-.
-├── models/                  # Neural network architectures
-│   ├── mnist_model.py       # Model for MNIST dataset
-│   └── cifar_model.py       # Model for CIFAR-10 dataset
-├── losses/                  # Loss function implementations
-│   └── margin_loss.py       # Large margin loss implementations
-├── utils/                   # Utility functions
-│   ├── data_loader.py       # Data loading utilities
-│   └── adversarial.py       # Adversarial attack utilities
-├── train_mnist.py           # Training script for MNIST
-├── train_cifar.py           # Training script for CIFAR-10
-├── checkpoints/             # Saved model checkpoints
-└── results/                 # Training results and visualizations
-```
-
 ## Usage
 
 The training scripts provide a flexible command-line interface to customize experiments:
-
-### Basic Usage
-
-To train with default parameters, start in thr root dir and use:
-
-```bash
-python -m train_mnist.py
-```
-
-or
-
-```bash
-python -m train_cifar.py
-```
 
 ### Loss Functions
 
@@ -46,6 +14,7 @@ The implementation supports several loss functions:
 - `simple_margin`: A simplified margin-based loss
 - `margin`: Full large margin loss implementation
 - `multi_layer_margin`: Margin applied at multiple network layers
+- `true_multi_layer_margin`: most faithful recreation of the methodology used in the paper, see class for more
 
 ### Command-Line Arguments
 
@@ -65,6 +34,10 @@ The implementation supports several loss functions:
 | `--data-fraction` | Fraction of training data to use | `1.0` |
 | `--layers` | Comma-separated list of layer indices | `` |
 | `--seed` | Random seed | `42` |
+| `--mixed-precision` | Enable mixed precision training (FP16) | `False` |
+| `--top-kTop` | K incorrect classes to consider for margin loss | `None` |
+| `--vectorize` | Use vectorized implementation for margin loss | `False` |
+| `--verbose` | Enable detailed timing information | `False` |
 
 *Note: for MNIST the layers range from 0-5, and for CIFAR the layers range []. OMit spaces when specifying multiple layers using the `--layers` flag
 
@@ -76,17 +49,15 @@ The implementation supports several loss functions:
 # Cross-entropy (baseline)
 python -m train_mnist.py --loss-type cross_entropy
 
-# Simple margin loss
-python -m train_mnist.py --loss-type simple_margin --gamma 10.0
-
 # Full margin loss with L2 norm
 python -m train_mnist.py --loss-type margin --gamma 10.0 --norm l2
 
-# Full margin loss with L-infinity norm
-python -m train_mnist.py --loss-type margin --gamma 10.0 --norm linf
-
 # Multi-layer margin loss (input, middle, and output layers)
 python -m train_mnist.py --loss-type multi_layer_margin --gamma 10.0 --layers "0,3,5"
+
+# True Multi-layer margin loss (all layers mnist, vectorized, top 3 incorrect classes, mixed precision)
+python -m training.train_mnist --loss-type true_multi_layer_margin --norm l2 --gamma 1.0 --layers "0,1,2,3,4,5" --batch-size 128 --lr 
+0.003 --mixed-precision --verbose --vectorize --top-k 3
 ```
 
 ### Experiments with Noisy Labels
@@ -118,22 +89,10 @@ python -m train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.01
 # 0.1% of training data
 python -m train_cifar.py --loss-type margin --gamma 15.0 --data-fraction 0.001
 ```
+## Visualizations
 
-### Advanced Configuration Example
-
-```bash
-python -m train_cifar.py \
-    --loss-type multi_layer_margin \
-    --gamma 15.0 \
-    --norm linf \
-    --aggregation sum \
-    --layers "0,3,7" \
-    --optimizer rmsprop \
-    --lr 0.001 \
-    --batch-size 64 \
-    --epochs 20 \
-    --noisy-labels 0.3
-```
+### Margin Boundaries
+** WORK IN PROGRESS
 
 ### UMAP/TSNE
 
@@ -198,7 +157,3 @@ results = compare_adversarial_robustness(
 ## References
 
 - [Large Margin Deep Networks for Classification](https://arxiv.org/abs/1803.05598) - Elsayed et al., NeurIPS 2018
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

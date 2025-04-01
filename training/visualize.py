@@ -36,7 +36,6 @@ def main():
         shuffle=False
     )
     
-    # Load and visualize each model
     model_paths = [path.strip() for path in args.models.split(',')]
     for model_path in model_paths:
 

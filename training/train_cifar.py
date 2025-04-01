@@ -5,14 +5,13 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from utils.data_loader import get_cifar10_data_loader
 from models.cifar_model import cifar_resnet_small, cifar_resnet_medium, cifar_resnet_large
-from losses.margin_loss import SimpleLargeMarginLoss, LargeMarginLoss, MultiLayerMarginLoss
+from losses.margin_loss import SimpleLargeMarginLoss, LargeMarginLoss, MultiLayerMarginLoss, TrueMultiLayerMarginLoss
 import argparse
 import numpy as np
 from pathlib import Path
 from utils.feature_space import visualize_features
 import time
 
-# Suppress TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class SimpleDataset(torch.utils.data.Dataset):
@@ -77,7 +76,7 @@ def corrupt_labels(labels, corruption_fraction):
     
     corrupted_labels = labels.clone()
     
-    # Randomly select indices to corrupt
+    # randomly select indices to corrupt
     corrupt_indices = np.random.choice(num_labels, num_corrupt, replace=False)
     for idx in corrupt_indices:
         original_label = labels[idx].item()
@@ -154,7 +153,6 @@ def main():
         
         print(f"Reduced training set size: {num_samples} samples")
     
-    # Initialize model based on selected size
     if args.model_size == 'small':
         model = cifar_resnet_small().to(device)
     elif args.model_size == 'medium':
@@ -164,7 +162,6 @@ def main():
         
     print(f"Model size: {args.model_size}, parameter count: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
     
-    # Choose loss function
     if args.loss_type == 'cross_entropy':
         criterion = nn.CrossEntropyLoss()
     elif args.loss_type == 'simple_margin':
@@ -174,15 +171,21 @@ def main():
                                   aggregation=args.aggregation)
     elif args.loss_type == 'multi_layer_margin':
         if not args.layers:
-            # Use 5 evenly spaced layers by default as mentioned in the paper
             layers = [0, 2, 3, 4, 6]  # Input, 3 hidden layers, output
             print(f"Using default layers for multi-layer margin: {layers}")
         else:
             layers = [int(layer.strip()) for layer in args.layers.split(',')]
         criterion = MultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
                                         norm=args.norm, aggregation=args.aggregation)
+    elif args.loss_type == 'true_multi_layer_margin':
+        if not args.layers:
+            layers = [0, 2, 3, 4, 6]
+            print(f"Using default layers for true multi-layer margin: {layers}")
+        else:
+            layers = [int(layer.strip()) for layer in args.layers.split(',')]
+        criterion = TrueMultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
+                                             norm=args.norm, aggregation=args.aggregation)
     
-    # Choose optimizer
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, 
                              momentum=args.momentum, weight_decay=args.weight_decay)
@@ -193,7 +196,6 @@ def main():
         optimizer = optim.RMSprop(model.parameters(), lr=args.lr, 
                                  weight_decay=args.weight_decay)
     
-    # Learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     train_losses, val_losses = [], []
@@ -210,14 +212,11 @@ def main():
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             
-            # Apply noisy labels if specified
             if args.noisy_labels > 0:
                 labels = corrupt_labels(labels, args.noisy_labels)
             
-            # Zero gradients
             optimizer.zero_grad()
             
-            # Forward pass
             if args.loss_type == 'multi_layer_margin':
                 outputs, activations = model(images, return_activations=True)
                 loss = criterion(outputs, labels, activations)
@@ -225,7 +224,6 @@ def main():
                 outputs = model(images)
                 loss = criterion(outputs, labels)
             
-            # Backward pass and optimize
             loss.backward()
             optimizer.step()
             
@@ -253,25 +251,20 @@ def main():
     training_time = time.time() - start_time
     print(f"Training completed in {training_time:.2f} seconds")
     
-    # Test set evaluation
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
     print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2%}")
     
-    # Create a descriptive model name for saving
     model_name = f"cifar10_model_{args.model_size}_{args.loss_type}"
     if args.noisy_labels > 0:
         model_name += f"_noisy{int(args.noisy_labels*100)}pct"
     if args.data_fraction < 1.0:
         model_name += f"_data{int(args.data_fraction*100)}pct"
     
-    # Save model
     torch.save(model.state_dict(), f"checkpoints/{model_name}.pth")
     
-    # Plot results
     plot_test_results(model, test_loader, device, model_name)
     plot_training_curves(train_losses, val_losses, train_accs, val_accs, model_name)
 
-    # Feature visualization if enabled
     if args.visualize:
         print(f"Visualizing features using {args.vis_method}...")
         
@@ -301,7 +294,6 @@ def plot_test_results(model, test_loader, device, model_name, num_images=10):
     """
     model.eval()
     
-    # Get a batch of images and predictions
     dataiter = iter(test_loader)
     images, labels = next(dataiter)
     images, labels = images[:num_images].to(device), labels[:num_images].to(device)

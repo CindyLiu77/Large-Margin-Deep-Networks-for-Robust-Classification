@@ -16,7 +16,7 @@ class SimpleLargeMarginLoss(nn.Module):
         batch_size, num_classes = logits.size()
         device = logits.device
         
-        # Get cross entropy for stability
+        # ce for stability
         ce_loss = self.cross_entropy(logits, targets)
         
         targets_one_hot = F.one_hot(targets, num_classes).float()
@@ -28,7 +28,6 @@ class SimpleLargeMarginLoss(nn.Module):
         margin_violations = margin_violations * mask
         margin_violations = F.relu(margin_violations)
         
-        # Choose aggregation type
         if self.aggregation == "max":
             margin_loss = torch.max(margin_violations, dim=1)[0]
         else:
@@ -36,8 +35,7 @@ class SimpleLargeMarginLoss(nn.Module):
         
         margin_loss = torch.mean(margin_loss)
         
-        # Combined loss - start with more weight on CE for better initialization
-        # Use a small weight for margin loss initially
+        # weighted loss doesnt follow the paper but stable
         total_loss = 0.8 * ce_loss + 0.2 * margin_loss
         
         return total_loss
@@ -45,7 +43,7 @@ class SimpleLargeMarginLoss(nn.Module):
 
 class LargeMarginLoss(nn.Module):
     """
-    Improved implementation of Large Margin Loss
+    Single Layer Large Margin Loss
     """
     def __init__(self, gamma=1.0, norm="l2", aggregation="max", epsilon=1e-6):
         super(LargeMarginLoss, self).__init__()
@@ -54,7 +52,7 @@ class LargeMarginLoss(nn.Module):
         self.aggregation = aggregation
         self.epsilon = epsilon
         self.cross_entropy = nn.CrossEntropyLoss()
-        # Use simple margin loss as a fallback
+        # Use simple margin loss as a fallback for None Grad
         self.simple_margin = SimpleLargeMarginLoss(gamma=gamma, aggregation=aggregation)
     
     def compute_dual_norm(self, grad_diff):
@@ -62,13 +60,10 @@ class LargeMarginLoss(nn.Module):
         Compute the dual norm of gradient differences
         """
         if self.norm == "l1":
-            # Dual of l1 is linf
             return torch.amax(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
         elif self.norm == "l2":
-            # Dual of l2 is l2
             return torch.sqrt(torch.sum(grad_diff**2, dim=list(range(1, grad_diff.dim()))) + self.epsilon)
         elif self.norm == "linf":
-            # Dual of linf is l1
             return torch.sum(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
         else:
             raise ValueError(f"Unsupported norm type: {self.norm}")
@@ -77,7 +72,6 @@ class LargeMarginLoss(nn.Module):
         """
         Forward pass of the large margin loss
         """
-        # Fall back to simple margin loss if no activations provided or in eval mode
         if layer_activations is None or not self.training:
             return self.cross_entropy(logits, targets)
         
@@ -154,7 +148,11 @@ class LargeMarginLoss(nn.Module):
 
 class MultiLayerMarginLoss(nn.Module):
     """
-    Improved multi-layer margin loss implementation
+    multi-layer margin loss implementation with performance changes
+    - Uses weighted cross-entropy  and simple margin loss as fallback for None gradients
+    - Uses a subset of the batch for margin computation
+    - Uses adaptive weighting for margin loss based on epoch
+    - only most confusing class is used for margin computation
     """
     def __init__(self, layers, gamma=0.5, norm="l2", aggregation="max", epsilon=1e-6):
         super(MultiLayerMarginLoss, self).__init__()
@@ -225,17 +223,14 @@ class MultiLayerMarginLoss(nn.Module):
         correct_class_scores = torch.sum(logits * targets_one_hot, dim=1)
         margin_losses = []
         
-        # Start with a small subset of the batch for efficiency
-        # Gradually increase as training progresses
+        # start with a small subset of the batch for efficiency - increases with epochs
         effective_batch_size = min(batch_size, 4 + self.epoch * 2)
         sample_indices = torch.randperm(batch_size)[:effective_batch_size]
         
-        # Process each layer
         for layer_idx in active_layers:
             layer_gamma = self.gamma[self.layers.index(layer_idx)]
             layer_norm = self.norm[self.layers.index(layer_idx)]
             
-            # Get activations for this layer
             layer_activation = activations[layer_idx]
             if layer_activation is None:
                 continue
@@ -243,7 +238,6 @@ class MultiLayerMarginLoss(nn.Module):
             if not layer_activation.requires_grad:
                 layer_activation.requires_grad_(True)
             
-            # Track valid margin computations for this layer
             layer_margin = torch.tensor(0.0, device=device)
             layer_valid_count = 0
             
@@ -278,11 +272,9 @@ class MultiLayerMarginLoss(nn.Module):
                         create_graph=True, retain_graph=True, allow_unused=True
                     )[0][i]
                     
-                    # Compute gradient difference and norm
                     grad_diff = grad_incorrect - grad_correct
                     grad_norm = self.compute_dual_norm(grad_diff.unsqueeze(0), layer_norm).squeeze() + self.epsilon
                     
-                    # Compute margin violation
                     violation = layer_gamma + score_diff / grad_norm
                     violation = F.relu(violation)
                     
@@ -292,7 +284,6 @@ class MultiLayerMarginLoss(nn.Module):
                 except Exception as e:
                     continue
             
-            # Add layer margin if valid
             if layer_valid_count > 0:
                 margin_losses.append(layer_margin / layer_valid_count)
         
@@ -310,3 +301,293 @@ class MultiLayerMarginLoss(nn.Module):
         total_loss = ce_weight * ce_loss + margin_weight * margin_loss + simple_weight * simple_loss
         
         return total_loss
+    
+class TrueMultiLayerMarginLoss(nn.Module):
+    """
+    Strict implementation of the Large Margin Deep Networks paper.
+    - Applies margin to all layers simultaneously
+    - Flexible choice of incorrect classes (all or top-k)
+    - No cross-entropy mixing
+    - Uses only the gradient-based margin formulation
+    - Supports both vectorized and sample-by-sample computation
+    - vectorized version is faster but less robust
+    """
+    def __init__(self, layers, gamma=1.0, norm="l2", aggregation="max", epsilon=1e-6, vectorize=False, top_k=None):
+        super(TrueMultiLayerMarginLoss, self).__init__()
+        self.layers = layers
+        self.vectorize = vectorize
+        self.top_k = top_k  # If None or -1, consider all incorrect classes
+        
+        if isinstance(gamma, (int, float)):
+            self.gamma = [gamma] * len(layers)
+        else:
+            self.gamma = gamma
+            
+        if isinstance(norm, str):
+            self.norm = [norm] * len(layers)
+        else:
+            self.norm = norm
+            
+        self.aggregation = aggregation
+        self.epsilon = epsilon
+        
+        self.cross_entropy = nn.CrossEntropyLoss()
+    
+    def compute_dual_norm(self, grad_diff, norm_type):
+        """
+        Compute the dual norm of gradient differences
+        """
+        if norm_type == "l1":
+            return torch.amax(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
+        elif norm_type == "l2":
+            return torch.sqrt(torch.sum(grad_diff**2, dim=list(range(1, grad_diff.dim()))) + self.epsilon)
+        elif norm_type == "linf":
+            return torch.sum(torch.abs(grad_diff), dim=list(range(1, grad_diff.dim())))
+        else:
+            raise ValueError(f"Unsupported norm type: {norm_type}")
+    
+    def forward_vectorized(self, logits, targets, activations):
+        """
+        Vectorized implementation for efficiency
+        """
+        batch_size, num_classes = logits.size()
+        device = logits.device
+        
+        targets_one_hot = F.one_hot(targets, num_classes).float().to(device)
+        
+        correct_class_scores = torch.sum(logits * targets_one_hot, dim=1)
+        
+        total_loss = torch.tensor(0.0, device=device)
+        valid_loss_count = 0
+        
+        for layer_idx, gamma in zip(self.layers, self.gamma):
+            norm_type = self.norm[self.layers.index(layer_idx)]
+            layer_activation = activations[layer_idx]
+            
+            if layer_activation is None:
+                continue
+                
+            if not layer_activation.requires_grad:
+                layer_activation.requires_grad_(True)
+            
+            layer_loss = torch.tensor(0.0, device=device)
+            layer_valid_count = 0
+            
+            try:
+                # Vectorized gradient computation for correct class scores
+                batch_correct_grads = torch.autograd.grad(
+                    outputs=correct_class_scores,
+                    inputs=layer_activation,
+                    grad_outputs=torch.ones_like(correct_class_scores),
+                    create_graph=True,
+                    retain_graph=True,
+                    allow_unused=True
+                )[0]
+                
+                if batch_correct_grads is None:
+                    continue
+                
+                for i in range(batch_size):
+                    target = targets[i]
+                    correct_score = correct_class_scores[i]
+                    grad_correct = batch_correct_grads[i]
+                    
+                    # top k incorrect classes
+                    logits_without_correct = logits[i].clone()
+                    logits_without_correct[target] = -float('inf')
+                    
+                    if self.top_k is None or self.top_k <= 0:
+                        confusing_classes = torch.nonzero(torch.ones_like(logits_without_correct).to(device) * (torch.arange(num_classes).to(device) != target)).squeeze()
+                    else:
+                        confusing_classes = torch.argsort(logits_without_correct, descending=True)[:self.top_k]
+                    
+                    sample_violations = []
+                    for j in confusing_classes:
+                        j = j.item()
+                        try:
+                            # grad_correct = torch.autograd.grad(
+                            #     correct_score, layer_activation, 
+                            #     create_graph=True, retain_graph=True, allow_unused=True
+                            # )[0]
+                            
+                            # if grad_correct is None:
+                            #     continue
+                            
+                            # grad_correct = grad_correct[i]
+                            
+                            # Can't vectorize this part due to different incorrect classes
+                            grad_incorrect = torch.autograd.grad(
+                                logits[i, j], 
+                                layer_activation, 
+                                create_graph=True, 
+                                retain_graph=True, 
+                                allow_unused=True
+                            )[0]
+                            
+                            if grad_incorrect is None:
+                                continue
+                                
+                            grad_incorrect = grad_incorrect[i]
+                            grad_diff = grad_incorrect - grad_correct
+                            
+                            # grad_norm = self.compute_dual_norm(grad_diff.unsqueeze(0), norm_type).squeeze() + self.epsilon
+
+                            #  first order taylor approx instead of computation of second order derivative with .detach()
+                            grad_norm = self.compute_dual_norm(grad_diff.unsqueeze(0), norm_type).squeeze() + self.epsilon
+                            grad_norm = grad_norm.detach()
+                            
+                            score_diff = logits[i, j] - correct_score
+                            violation = gamma + score_diff / grad_norm
+                            violation = F.relu(violation)
+                            
+                            sample_violations.append(violation)
+                        except Exception as e:
+                            continue
+                    
+                    if sample_violations:
+                        if self.aggregation == "max":
+                            sample_loss = torch.max(torch.stack(sample_violations))
+                        else:
+                            sample_loss = torch.sum(torch.stack(sample_violations))
+                        
+                        layer_loss += sample_loss
+                        layer_valid_count += 1
+                
+                if layer_valid_count > 0:
+                    layer_loss = layer_loss / layer_valid_count
+                    total_loss += layer_loss
+                    valid_loss_count += 1
+                    
+            except Exception as e:
+                continue
+        
+        # Fallback
+        if valid_loss_count == 0:
+            return self.cross_entropy(logits, targets)
+        
+        return total_loss / valid_loss_count
+    
+    def forward_sample_by_sample(self, logits, targets, activations):
+        """
+        Sample-by-sample implementation for robustness
+        """
+        batch_size, num_classes = logits.size()
+        device = logits.device
+        
+        targets_one_hot = F.one_hot(targets, num_classes).float().to(device)
+        
+        correct_class_scores = torch.sum(logits * targets_one_hot, dim=1)
+
+        total_loss = torch.tensor(0.0, device=device)
+        valid_loss_count = 0
+        
+        for layer_idx, gamma in zip(self.layers, self.gamma):
+            norm_type = self.norm[self.layers.index(layer_idx)]
+            layer_activation = activations[layer_idx]
+            
+            if layer_activation is None:
+                continue
+                
+            if not layer_activation.requires_grad:
+                layer_activation.requires_grad_(True)
+            
+            layer_loss = torch.tensor(0.0, device=device)
+            layer_valid_count = 0
+            
+            # Process samples one by one
+            for i in range(batch_size):
+                target = targets[i]
+                correct_score = correct_class_scores[i]
+                
+                try:
+                    # gradient for correct class
+                    grad_correct = torch.autograd.grad(
+                        correct_score, layer_activation, 
+                        create_graph=True, retain_graph=True, allow_unused=True
+                    )[0]
+                    
+                    if grad_correct is None:
+                        continue
+                    
+                    grad_correct = grad_correct[i]
+                    
+                    # top k incorrect classes
+                    logits_without_correct = logits[i].clone()
+                    logits_without_correct[target] = -float('inf')
+                    
+                    if self.top_k is None or self.top_k <= 0:
+                        confusing_classes = torch.nonzero(torch.ones_like(logits_without_correct).to(device) * (torch.arange(num_classes).to(device) != target)).squeeze()
+                    else:
+                        confusing_classes = torch.argsort(logits_without_correct, descending=True)[:self.top_k]
+                    
+                    sample_violations = []
+                    for j in confusing_classes:
+                        j = j.item()
+                        try:
+                            grad_incorrect = torch.autograd.grad(
+                                logits[i, j], 
+                                layer_activation, 
+                                create_graph=True, 
+                                retain_graph=True, 
+                                allow_unused=True
+                            )[0]
+                            
+                            if grad_incorrect is None:
+                                continue
+                                
+                            grad_incorrect = grad_incorrect[i]
+                            
+                            grad_diff = grad_incorrect - grad_correct
+                            grad_norm = self.compute_dual_norm(grad_diff.unsqueeze(0), norm_type).squeeze() + self.epsilon
+                            
+                            #  first order taylor approx instead of computation of second order derivative with .detach()
+                            grad_norm = grad_norm.detach()
+                            
+                            score_diff = logits[i, j] - correct_score
+                            
+                            violation = gamma + score_diff / grad_norm
+                            violation = F.relu(violation)
+                            
+                            sample_violations.append(violation)
+                            
+                        except Exception as e:
+                            continue
+                            
+                    if sample_violations:
+                        if self.aggregation == "max":
+                            sample_loss = torch.max(torch.stack(sample_violations))
+                        else:
+                            sample_loss = torch.sum(torch.stack(sample_violations))
+                        
+                        layer_loss += sample_loss
+                        layer_valid_count += 1
+                        
+                except Exception as e:
+                    continue
+            
+            if layer_valid_count > 0:
+                layer_loss = layer_loss / layer_valid_count
+                total_loss += layer_loss
+                valid_loss_count += 1
+        
+        # Fallback
+        if valid_loss_count == 0:
+            return self.cross_entropy(logits, targets)
+        
+        return total_loss / valid_loss_count
+    
+    def forward(self, logits, targets, activations=None):
+        """
+        Compute the multi-layer margin loss exactly like in paper
+        """
+        # Fallback
+        if activations is None or not self.training:
+            return self.cross_entropy(logits, targets)
+        
+        if len(activations) <= max(self.layers):
+            raise ValueError(f"Not enough activations ({len(activations)}) for requested layers (max {max(self.layers)})")
+        
+        if self.vectorize:
+            return self.forward_vectorized(logits, targets, activations)
+        else:
+            return self.forward_sample_by_sample(logits, targets, activations)
