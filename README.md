@@ -14,7 +14,7 @@ The implementation supports several loss functions:
 - `simple_margin`: A simplified margin-based loss
 - `margin`: Full large margin loss implementation
 - `multi_layer_margin`: Margin applied at multiple network layers
-- `true_multi_layer_margin`: most faithful recreation of the methodology used in the paper, see class for more
+- `true_multi_layer_margin`: Most faithful recreation of the methodology used in the paper, see TrueMultiLayerMargin class for more details
 
 ### Command-Line Arguments
 

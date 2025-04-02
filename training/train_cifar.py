@@ -11,6 +11,8 @@ import numpy as np
 from pathlib import Path
 from utils.feature_space import visualize_features
 import time
+from tqdm import tqdm
+import gc
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -32,7 +34,7 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--loss-type', type=str, default='cross_entropy', 
-                        choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin'],
+                        choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin', 'true_multi_layer_margin'],
                         help='Loss function to use')
     parser.add_argument('--gamma', type=float, default=10.0, help='Margin parameter')
     parser.add_argument('--norm', type=str, default='l2', choices=['l1', 'l2', 'linf'],
@@ -59,6 +61,23 @@ def parse_args():
                         help='Visualization method for feature space')
     parser.add_argument('--vis-subset', type=int, default=1000,
                         help='Number of samples to use for visualization')
+    
+    # Add mixed precision flag
+    parser.add_argument('--mixed-precision', action='store_true',
+                        help='Enable mixed precision training (FP16)')
+    
+    # Add tracking verbosity
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable detailed timing information for debugging slow training')
+    
+    # Top K incorrect classes for margin loss
+    parser.add_argument('--top-k', type=int, default=None, 
+                        help='Top K incorrect classes to consider for margin loss')
+    
+    # Vectorized implementation
+    parser.add_argument('--vectorize', action='store_true',
+                        help='Use vectorized implementation for margin loss')
+    
     return parser.parse_args()
 
 def corrupt_labels(labels, corruption_fraction):
@@ -76,7 +95,6 @@ def corrupt_labels(labels, corruption_fraction):
     
     corrupted_labels = labels.clone()
     
-    # randomly select indices to corrupt
     corrupt_indices = np.random.choice(num_labels, num_corrupt, replace=False)
     for idx in corrupt_indices:
         original_label = labels[idx].item()
@@ -85,7 +103,7 @@ def corrupt_labels(labels, corruption_fraction):
     
     return corrupted_labels
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, use_mixed_precision=False):
     """
     Evaluate the model on the given dataloader.
     """
@@ -94,21 +112,28 @@ def evaluate(model, dataloader, criterion, device):
     correct = 0
     total = 0
     
+    eval_pbar = tqdm(dataloader, desc="Evaluating")
+    
     with torch.no_grad():
-        for images, labels in dataloader:
+        for images, labels in eval_pbar:
             images, labels = images.to(device), labels.to(device)
             
-            if hasattr(criterion, 'layers'):
-                outputs, activations = model(images, return_activations=True)
-                loss = criterion(outputs, labels, activations)
-            else:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            with torch.cuda.amp.autocast(enabled=use_mixed_precision):
+                if hasattr(criterion, 'layers'):
+                    outputs, activations = model(images, return_activations=True)
+                    loss = criterion(outputs, labels, activations)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
             
             _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
+            batch_size = labels.size(0)
+            total += batch_size
             correct += (predicted == labels).sum().item()
-            total_loss += loss.item() * labels.size(0)
+            total_loss += loss.item() * batch_size
+            
+            current_acc = correct / total
+            eval_pbar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{current_acc:.4f}"})
     
     avg_loss = total_loss / total
     accuracy = correct / total
@@ -125,12 +150,15 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision)
+    if args.mixed_precision:
+        print("Using mixed precision training (FP16)")
+    
     Path("checkpoints").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
     
     train_loader, val_loader, test_loader = get_cifar10_data_loader(args.batch_size)
     
-    # If using reduced data, create a subset of the training data
     if args.data_fraction < 1.0:
         train_data_list = []
         for batch in train_loader:
@@ -147,7 +175,7 @@ def main():
             train_dataset, 
             batch_size=args.batch_size, 
             shuffle=True,
-            num_workers=0,
+            num_workers=4,
             pin_memory=True
         )
         
@@ -161,7 +189,7 @@ def main():
         model = cifar_resnet_large().to(device)
         
     print(f"Model size: {args.model_size}, parameter count: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-    
+
     if args.loss_type == 'cross_entropy':
         criterion = nn.CrossEntropyLoss()
     elif args.loss_type == 'simple_margin':
@@ -171,7 +199,7 @@ def main():
                                   aggregation=args.aggregation)
     elif args.loss_type == 'multi_layer_margin':
         if not args.layers:
-            layers = [0, 2, 3, 4, 6]  # Input, 3 hidden layers, output
+            layers = [0, 2, 3, 4, 6]
             print(f"Using default layers for multi-layer margin: {layers}")
         else:
             layers = [int(layer.strip()) for layer in args.layers.split(',')]
@@ -184,8 +212,8 @@ def main():
         else:
             layers = [int(layer.strip()) for layer in args.layers.split(',')]
         criterion = TrueMultiLayerMarginLoss(layers=layers, gamma=args.gamma, 
-                                             norm=args.norm, aggregation=args.aggregation)
-    
+                                          norm=args.norm, aggregation=args.aggregation,
+                                          vectorize=args.vectorize, top_k=args.top_k)
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, 
                              momentum=args.momentum, weight_decay=args.weight_decay)
@@ -203,38 +231,115 @@ def main():
     
     start_time = time.time()
     print(f"Starting training for {args.epochs} epochs...")
+    
+    # timing
+    total_forward_time = 0
+    total_backward_time = 0
+    total_optimization_time = 0
+    
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
         correct = 0
         total = 0
         
-        for images, labels in train_loader:
+        # tracking
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        epoch_forward_time = 0
+        epoch_backward_time = 0
+        epoch_optim_time = 0
+        slowest_batches = []
+        
+        for batch_idx, (images, labels) in enumerate(train_pbar):
+            batch_start_time = time.time()
             images, labels = images.to(device), labels.to(device)
             
             if args.noisy_labels > 0:
                 labels = corrupt_labels(labels, args.noisy_labels)
             
             optimizer.zero_grad()
+            forward_start = time.time()
+            with torch.cuda.amp.autocast(enabled=args.mixed_precision):
+                if args.loss_type in ['multi_layer_margin', 'true_multi_layer_margin']:
+                    outputs, activations = model(images, return_activations=True)
+                    loss = criterion(outputs, labels, activations)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
             
-            if args.loss_type == 'multi_layer_margin':
-                outputs, activations = model(images, return_activations=True)
-                loss = criterion(outputs, labels, activations)
+            forward_time = time.time() - forward_start
+            epoch_forward_time += forward_time
+            
+            backward_start = time.time()
+            
+            if args.mixed_precision:
+                scaler.scale(loss).backward()
             else:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+                loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+            backward_time = time.time() - backward_start
+            epoch_backward_time += backward_time
             
-            loss.backward()
-            optimizer.step()
+            # Track optimization time
+            optim_start = time.time()
+            
+            if args.mixed_precision:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+                
+            optim_time = time.time() - optim_start
+            epoch_optim_time += optim_time
+            
+            # Calculate batch time
+            batch_time = time.time() - batch_start_time
+            
+            # Track slowest batches
+            slowest_batches.append((batch_idx, batch_time, forward_time, backward_time, optim_time))
+            if len(slowest_batches) > 5:  # Keep only the 5 slowest batches
+                slowest_batches.sort(key=lambda x: x[1], reverse=True)
+                slowest_batches = slowest_batches[:5]
             
             epoch_loss += loss.item() * labels.size(0)
             _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
+            batch_size = labels.size(0)
+            total += batch_size
             correct += (predicted == labels).sum().item()
+            
+            current_loss = epoch_loss / total
+            current_acc = correct / total
+            train_pbar.set_postfix({
+                "loss": f"{current_loss:.4f}",
+                "acc": f"{current_acc:.4f}",
+                "batch_time": f"{batch_time:.2f}s"
+            })
+            
+            # if slow batches
+            if args.verbose and batch_time > 10.0:
+                print(f"\nSlow batch {batch_idx}: Total={batch_time:.2f}s, "
+                      f"Forward={forward_time:.2f}s, Backward={backward_time:.2f}s, "
+                      f"Optim={optim_time:.2f}s")
+                
+                # GPU memory usage
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)
+                    max_allocated = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+                    reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)
+                    print(f"GPU Memory: {allocated:.2f}GB allocated, {max_allocated:.2f}GB max, "
+                          f"{reserved:.2f}GB reserved")
+            
+            # Force garbage collection
+            if batch_idx % 10 == 0:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         train_loss = epoch_loss / total
         train_acc = correct / total
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device, args.mixed_precision)
         
         scheduler.step()
         
@@ -243,15 +348,27 @@ def main():
         train_accs.append(train_acc)
         val_accs.append(val_acc)
         
-        if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == args.epochs - 1:
-            print(f"Epoch {epoch+1}/{args.epochs}, "
-                f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2%}, "
-                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
+        epoch_time = time.time() - start_time
+        start_time = time.time()
+        
+        total_forward_time += epoch_forward_time
+        total_backward_time += epoch_backward_time
+        total_optimization_time += epoch_optim_time
+
+        print(f"Epoch {epoch+1}/{args.epochs}, "
+              f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2%}, "
+              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
+        
+        if args.verbose:
+            print(f"  Forward: {epoch_forward_time:.2f}s, Backward: {epoch_backward_time:.2f}s, "
+                  f"Optimization: {epoch_optim_time:.2f}s")
+            print("\nSlowest batches in this epoch:")
+            for i, (batch_idx, batch_time, fwd_time, bwd_time, opt_time) in enumerate(slowest_batches):
+                print(f"  {i+1}. Batch {batch_idx}: Total={batch_time:.2f}s, "
+                      f"Forward={fwd_time:.2f}s, Backward={bwd_time:.2f}s, "
+                      f"Optim={opt_time:.2f}s")
     
-    training_time = time.time() - start_time
-    print(f"Training completed in {training_time:.2f} seconds")
-    
-    test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+    test_loss, test_acc = evaluate(model, test_loader, criterion, device, args.mixed_precision)
     print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2%}")
     
     model_name = f"cifar10_model_{args.model_size}_{args.loss_type}"
@@ -259,6 +376,8 @@ def main():
         model_name += f"_noisy{int(args.noisy_labels*100)}pct"
     if args.data_fraction < 1.0:
         model_name += f"_data{int(args.data_fraction*100)}pct"
+    if args.mixed_precision:
+        model_name += "_fp16"
     
     torch.save(model.state_dict(), f"checkpoints/{model_name}.pth")
     
@@ -268,7 +387,6 @@ def main():
     if args.visualize:
         print(f"Visualizing features using {args.vis_method}...")
         
-        # Create a subset of test data for visualization
         subset_indices = np.random.choice(len(test_loader.dataset), args.vis_subset, replace=False)
         subset = torch.utils.data.Subset(test_loader.dataset, subset_indices)
         subset_loader = torch.utils.data.DataLoader(
@@ -305,7 +423,6 @@ def plot_test_results(model, test_loader, device, model_name, num_images=10):
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 
                'dog', 'frog', 'horse', 'ship', 'truck')
     
-    # Plot images with predictions
     fig, axes = plt.subplots(1, num_images, figsize=(15, 3))
     for i in range(num_images):
         img = images[i].cpu().numpy().transpose((1, 2, 0))

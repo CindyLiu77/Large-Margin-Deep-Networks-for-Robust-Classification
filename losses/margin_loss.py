@@ -45,7 +45,7 @@ class LargeMarginLoss(nn.Module):
     """
     Single Layer Large Margin Loss
     """
-    def __init__(self, gamma=1.0, norm="l2", aggregation="max", epsilon=1e-6):
+    def __init__(self, gamma=1.0, norm="l2", aggregation="max", epsilon=1e-4):
         super(LargeMarginLoss, self).__init__()
         self.gamma = gamma
         self.norm = norm

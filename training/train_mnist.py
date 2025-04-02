@@ -334,13 +334,13 @@ def main():
                 "backward": f"{backward_time:.2f}s"
             })
             
-            # Print detailed timing for slow batches
-            if args.verbose and batch_time > 5.0:  # If batch takes more than 5 seconds
+            # if slow batches
+            if args.verbose and batch_time > 5.0:
                 print(f"\nSlow batch {batch_idx}: Total={batch_time:.2f}s, "
                       f"Forward={forward_time:.2f}s, Backward={backward_time:.2f}s, "
                       f"Optim={optim_time:.2f}s")
                 
-                # Print GPU memory usage
+                # GPU memory usage
                 if torch.cuda.is_available():
                     allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)
                     max_allocated = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
