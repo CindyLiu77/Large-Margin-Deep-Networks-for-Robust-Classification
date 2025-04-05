@@ -39,7 +39,7 @@ The implementation supports several loss functions:
 | `--vectorize` | Use vectorized implementation for margin loss | `False` |
 | `--verbose` | Enable detailed timing information | `False` |
 
-*Note: for MNIST the layers range from 0-5, and for CIFAR the layers range []. OMit spaces when specifying multiple layers using the `--layers` flag
+*Note: for MNIST the layers range from 0-5 inclusive, and for CIFAR the layers range []. OMit spaces when specifying multiple layers using the `--layers` flag
 
 ## Example Commands
 
