@@ -1,0 +1,1 @@
+{'clean_accuracy': 0.9792, 'adversarial_accuracy': 0.7359, 'attack': 'fgsm', 'epsilon': 0.3, 'alpha': 0.01, 'num_iter': 10, 'loss_type': 'cross_entropy', 'gamma': 10.0, 'norm': 'l2', 'aggregation': 'max', 'layers': None, 'vectorize': False, 'top_k': 1}

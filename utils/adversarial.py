@@ -68,31 +68,34 @@ def fgsm_attack(model, loss_fn, image, label, dataset, epsilon, loss_type='cross
         raise ValueError("Unsupported dataset. Choose either 'mnist' or 'cifar10'.")
     return perturbed_image
 
-# Example I-FGSM (Iterative FGSM) attack function.
 def ifgsm_attack(model, loss_fn, image, label, dataset, epsilon, alpha, num_iter, loss_type='cross_entropy'):
-    perturbed_image = image.clone()
+    # Make a detached clone so that perturbed_image is a leaf tensor.
+    perturbed_image = image.clone().detach()
     for i in range(num_iter):
-        perturbed_image.requires_grad = True
+        # Detach and re-enable gradients so that perturbed_image is a leaf variable.
+        perturbed_image = perturbed_image.detach()
+        perturbed_image.requires_grad_()
+
         if loss_type in ['multi_layer_margin', 'true_multi_layer_margin']:
             output, activations = model(perturbed_image, return_activations=True)
             loss = loss_fn(output, label, activations)
         else:
             output = model(perturbed_image)
             loss = loss_fn(output, label)
+            
         loss.backward()
         grad_sign = perturbed_image.grad.data.sign()
         # Update adversarial example with a small step.
         perturbed_image = perturbed_image + alpha * grad_sign
         # Project the perturbation to ensure it is within the epsilon ball of the original image.
         perturbation = torch.clamp(perturbed_image - image, min=-epsilon, max=epsilon)
-        # Ensure the perturbed image is within the valid normalized range.
+
         perturbed_image = image + perturbation
+        # Clamp the perturbed image to remain in the normalized valid range.
         if dataset == 'mnist':
             perturbed_image = torch.clamp(perturbed_image, norm_min_mnist, norm_max_mnist)
         elif dataset == 'cifar10':
             perturbed_image = torch.clamp(perturbed_image, norm_min_cifar, norm_max_cifar)
         else:
             raise ValueError("Unsupported dataset. Choose either 'mnist' or 'cifar10'.")
-    # Ensure the perturbed image is within the valid normalized range.
     return perturbed_image
-

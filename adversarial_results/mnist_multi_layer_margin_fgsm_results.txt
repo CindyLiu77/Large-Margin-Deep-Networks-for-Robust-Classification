@@ -1,0 +1,1 @@
+{'clean_accuracy': 0.9682, 'adversarial_accuracy': 0.7761, 'attack': 'fgsm', 'epsilon': 0.3, 'alpha': 0.01, 'num_iter': 10, 'loss_type': 'multi_layer_margin', 'gamma': 1.0, 'norm': 'l2', 'aggregation': 'max', 'layers': '0,1,2,3,4,5', 'vectorize': True, 'top_k': 3}

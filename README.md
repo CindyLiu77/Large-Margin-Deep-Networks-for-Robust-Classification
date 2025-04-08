@@ -104,55 +104,49 @@ Note: the mnist dataset has ~10,000 samples
 
 ## Adversarial Robustness Testing
 
-**WORK IN PROGRESS
-
 To evaluate a model's robustness to adversarial examples, you can use the adversarial utilities:
 
-```python
-from utils.adversarial import fgsm_attack, ifgsm_attack, evaluate_adversarial
-import torch
-
-# Load a trained model
-model = YourModel()
-model.load_state_dict(torch.load('checkpoints/your_model.pth'))
-model.to(device)
-
-# Evaluate against FGSM attacks
-fgsm_acc = evaluate_adversarial(
-    model, test_loader, 
-    attack_fn=fgsm_attack, 
-    attack_params={'epsilon': 0.1}, 
-    device=device
-)
-print(f"FGSM Accuracy: {fgsm_acc:.2%}")
-
-# Evaluate against I-FGSM attacks
-ifgsm_acc = evaluate_adversarial(
-    model, test_loader, 
-    attack_fn=ifgsm_attack, 
-    attack_params={'epsilon': 0.1, 'alpha': 0.01, 'iterations': 10}, 
-    device=device
-)
-print(f"I-FGSM Accuracy: {ifgsm_acc:.2%}")
+```bash
+python3 -m eval.adversarial_eval --model "checkpoints/mnist_model_multi_layer_margin.pth" --dataset 'mnist' --batch-size 128 --attack 'fgsm' --norm l2 --gamma 1.0 --layers "0,1,2,3,4,5"  --top-k 3 --vectorize --epsilon 0.3 --loss-type 'multi_layer_margin'               
 ```
 
-For comparing multiple models:
+The parameters for the large part are consitent with the parameters needed for the loss.
 
-```python
-from utils.adversarial import compare_adversarial_robustness
+### Summary of Parameters
 
-epsilons = [0.01, 0.05, 0.1, 0.15, 0.2]
-models = [model1, model2, model3]
-dataloaders = [test_loader, test_loader, test_loader]
-names = ['Cross-Entropy', 'L2 Margin', 'L-inf Margin']
+#### Model Parameters
+--model           (str, required)       Path to the model file.
+--model-size      (str, default='medium', choices=['small', 'medium', 'large'])
+                                     Size of the ResNet model to use.
 
-results = compare_adversarial_robustness(
-    models, dataloaders, epsilons, 
-    attack_fn=fgsm_attack, 
-    device=device, 
-    names=names
-)
-```
+#### Dataset Parameters
+--dataset         (str, required, choices=['mnist', 'cifar10'])
+                                     Dataset to use.
+--seed            (int, default=42)   Random seed used for training.
+--batch-size      (int, default=64)   Batch size for data loading.
+
+#### Attack Parameters
+--attack          (str, required, choices=['fgsm', 'ifgsm'])
+                                     Type of attack to evaluate.
+--epsilon         (float, default=0.3)
+                                     Epsilon for FGSM and I-FGSM attacks.
+--alpha           (float, default=0.01)
+                                     Alpha (step size) for I-FGSM attack.
+--num_iter        (int, default=10)   Number of iterations for I-FGSM attack.
+
+#### Loss Function Parameters
+--loss-type       (str, default='cross_entropy',
+                  choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin', 'true_multi_layer_margin'])
+                                     Loss function to use.
+--gamma           (float, default=10.0)
+                                     Margin parameter for margin-based losses.
+--norm            (str, default='l2', choices=['l1', 'l2', 'linf'])
+                                     Norm type for margin computation.
+--aggregation     (str, default='max', choices=['max', 'sum'])
+                                     Aggregation method for margin violations.
+--layers          (str, default=None) Layers to apply multi-layer margin loss.
+--vectorize       (flag)              Use vectorized implementation for multi-layer margin loss.
+--top-k           (int, default=1)    Top k layers to consider for multi-layer margin loss.
 
 ## References
 
