@@ -113,40 +113,24 @@ python3 -m eval.adversarial_eval --model "checkpoints/mnist_model_multi_layer_ma
 The parameters for the large part are consitent with the parameters needed for the loss.
 
 ### Summary of Parameters
-
-#### Model Parameters
---model           (str, required)       Path to the model file.
---model-size      (str, default='medium', choices=['small', 'medium', 'large'])
-                                     Size of the ResNet model to use.
-
-#### Dataset Parameters
---dataset         (str, required, choices=['mnist', 'cifar10'])
-                                     Dataset to use.
---seed            (int, default=42)   Random seed used for training.
---batch-size      (int, default=64)   Batch size for data loading.
-
-#### Attack Parameters
---attack          (str, required, choices=['fgsm', 'ifgsm'])
-                                     Type of attack to evaluate.
---epsilon         (float, default=0.3)
-                                     Epsilon for FGSM and I-FGSM attacks.
---alpha           (float, default=0.01)
-                                     Alpha (step size) for I-FGSM attack.
---num_iter        (int, default=10)   Number of iterations for I-FGSM attack.
-
-#### Loss Function Parameters
---loss-type       (str, default='cross_entropy',
-                  choices=['cross_entropy', 'simple_margin', 'margin', 'multi_layer_margin', 'true_multi_layer_margin'])
-                                     Loss function to use.
---gamma           (float, default=10.0)
-                                     Margin parameter for margin-based losses.
---norm            (str, default='l2', choices=['l1', 'l2', 'linf'])
-                                     Norm type for margin computation.
---aggregation     (str, default='max', choices=['max', 'sum'])
-                                     Aggregation method for margin violations.
---layers          (str, default=None) Layers to apply multi-layer margin loss.
---vectorize       (flag)              Use vectorized implementation for multi-layer margin loss.
---top-k           (int, default=1)    Top k layers to consider for multi-layer margin loss.
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--model` | Path to the model file | *Required* |
+| `--model-size` | Size of the ResNet model to use (`small`, `medium`, `large`) | `medium` |
+| `--dataset` | Dataset to use (`mnist`, `cifar10`) | *Required* |
+| `--seed` | Random seed used for training | `42` |
+| `--batch-size` | Batch size for data loading | `64` |
+| `--attack` | Type of attack to evaluate (`fgsm`, `ifgsm`) | *Required* |
+| `--epsilon` | Epsilon for FGSM and I-FGSM attacks | `0.3` |
+| `--alpha` | Alpha (step size) for I-FGSM attack | `0.01` |
+| `--num_iter` | Number of iterations for I-FGSM attack | `10` |
+| `--loss-type` | Type of loss function (`cross_entropy`, `simple_margin`, `margin`, `multi_layer_margin`, `true_multi_layer_margin`) | `cross_entropy` |
+| `--gamma` | Margin parameter for margin losses | `10.0` |
+| `--norm` | Norm type for margin computation (`l1`, `l2`, `linf`) | `l2` |
+| `--aggregation` | How to aggregate margins (`max`, `sum`) | `max` |
+| `--layers` | Comma-separated list of layer indices for multi-layer margin loss | `` |
+| `--vectorize` | Use vectorized implementation for multi-layer margin loss | `False` |
+| `--top-k` | Top k layers to consider for multi-layer margin loss | `1` |
 
 ## References
 
